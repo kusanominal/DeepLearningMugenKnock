@@ -2,12 +2,15 @@ import numpy as np
 
 np.random.seed(0)
 
-x = np.array(((0,0), (0,1), (1,0), (1,1)), dtype=np.float32)
-t = np.array(((-1), (-1), (-1), (1)), dtype=np.float32)
+xs = np.array(((0,0), (0,1), (1,0), (1,1)), dtype=np.float32)
+ts = np.array(((0), (0), (0), (1)), dtype=np.float32)
 
 lrs = [0.1, 0.01]
 linestyles = ['solid', 'dashed']
 plts = []
+
+def sigmoid(x):
+    return 1. / (1 + np.exp(-x))
 
 for _i in range(len(lrs)):
     lr = lrs[_i]
@@ -18,32 +21,31 @@ for _i in range(len(lrs)):
     print("weight >>", w)
 
     # add bias
-    _x = np.hstack([x, [[1] for _ in range(4)]])
+    z1 = np.hstack([xs, [[1] for _ in range(4)]])
 
     # train
-    ite = 0
+    ite = 1
     w1 = [w[0]]
     w2 = [w[1]]
     w3 = [w[2]]
 
-    while True:
+    for _ in range(1000):
+        # feed forward
+        ys = sigmoid(np.dot(z1, w))
+        #ys = sigmoid(np.array(list(map(lambda x: np.dot(w, x), z1))))
+
+        print("iteration:", ite, "y >>", ys)
+
+        En = -2 * (ys - ts) * ys * (1 - ys)
+        grad_w = np.dot(z1.T, En)
+        w += lr * grad_w
+
+        w1.append(w[0])
+        w2.append(w[1])
+        w3.append(w[2])
+
         ite += 1
-        y = np.array(list(map(lambda x: np.dot(w, x), _x)))
 
-        En = np.array([0 for _ in range(3)], dtype=np.float32)
-
-        for i in range(4):
-            if y[i] * t[i] < 0:
-                En += t[i] * _x[i]
-
-        print("iteration:", ite, "y >>", y)
-        if np.any(En != 0):
-            w += lr * En
-            w1.append(w[0])
-            w2.append(w[1])
-            w3.append(w[2])
-        else:
-            break
     print("training finished!")
     print("weight >>", w)
 
@@ -59,9 +61,9 @@ plt.savefig("answer_perceptron3.png")
 plt.show()
 
 # test
-y = np.array(list(map(lambda x: np.dot(w, x), _x)))
+#ys = np.array(list(map(lambda x: np.dot(w, x), _xs)))
 
 for i in range(4):
-    y = np.dot(w, _x[i])
-    print("in >>", _x[i], ", out >>", y) 
+    ys = sigmoid(np.dot(w, np.hstack([xs[i], [1]])))
+    print("in >>", xs[i], ", out >>", ys) 
     

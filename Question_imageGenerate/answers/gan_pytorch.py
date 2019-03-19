@@ -9,27 +9,51 @@ import matplotlib.pyplot as plt
 num_classes = 2
 img_height, img_width = 64, 64 #572, 572
 channel = 3
-mb = 64
 
 GPU = False
 torch.manual_seed(0)
     
-class Mynet(torch.nn.Module):
+class Generator(torch.nn.Module):
     def __init__(self):
-        super(Mynet, self).__init__()
-
-        self.enc1 = torch.nn.Conv2d(channel, 32, kernel_size=3, padding=1)
-        self.enc2 = torch.nn.Conv2d(32, 16, kernel_size=3, padding=1)
-        self.dec2 = torch.nn.ConvTranspose2d(16, 32, kernel_size=2, stride=2)
-        self.dec1 = torch.nn.ConvTranspose2d(32, channel, kernel_size=2, stride=2)
+        super(Generator, self).__init__()
+        self.l1 = torch.nn.Linear(100, 128)
+        self.bn1 = torch.nn.BatchNorm1d(128)
+        self.l2 = torch.nn.Linear(128, 256)
+        self.bn2 = torch.nn.BatchNorm1d(256)
+        self.l3 = torch.nn.Linear(256, 512)
+        self.bn3 = torch.nn.BatchNorm1d(512)
+        self.l4 = torch.nn.Linear(512, img_height * img_width * channel)
+        
         
     def forward(self, x):
-        x = self.enc1(x)
-        x = F.max_pool2d(x, 2)
-        x = self.enc2(x)
-        x = F.max_pool2d(x, 2)
-        x = self.dec2(x)
-        x = self.dec1(x)
+        x = self.l1(x)
+        x = self.bn1(x)
+        x = torch.nn.functional.leaky_relu(x, 0.2)
+        x = self.l2(x)
+        x = self.bn2(x)
+        x = torch.nn.functional.leaky_relu(x, 0.2)
+        x = self.l3(x)
+        x = self.bn3(x)
+        x = torch.nn.functional.leaky_relu(x, 0.2)
+        x = self.l4(x)
+        x = torch.nn.functional.tanh(x)
+        return x
+
+
+class Discriminator(torch.nn.Module):
+    def __init__(self):
+        super(Discriminator, self).__init__()
+        self.l1 = torch.nn.Linear(img_height * img_width * channel, 512)
+        self.l2 = torch.nn.Linear(512, 256)
+        self.l3 = torch.nn.Linear(256, 1)
+
+    def forward(self, x):
+        x = self.l1(x)
+        x = torch.nn.functional.leaky_relu(x, 0.2)
+        x = self.l2(x)
+        x = torch.nn.functional.leaky_relu(x, 0.2)
+        x = self.l3(x)
+        x = torch.nn.functional.sigmoid(x)
         return x
 
     
@@ -104,19 +128,24 @@ def train():
     device = torch.device("cuda" if GPU else "cpu")
 
     # model
-    model = Mynet().to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=0.001)
-    model.train()
+    gen = Generator().to(device)
+    dis = Discriminator().to(device)
+    gan = torch.nn.Sequential(gen, dis)
+
+    opt_d = torch.optim.Adam(dis.parameters(), lr=0.0002)
+    opt_g = torch.optim.Adam(gen.parameters(), lr=0.0002)
+
 
     xs, paths = data_load('../Dataset/train/images/', hf=True, vf=True, rot=1)
 
     # training
+    mb = 32
     mbi = 0
     train_ind = np.arange(len(xs))
     np.random.seed(0)
     np.random.shuffle(train_ind)
     
-    for i in range(500):
+    for i in range(5000):
         if mbi + mb > len(xs):
             mb_ind = train_ind[mbi:]
             np.random.shuffle(train_ind)
@@ -126,67 +155,81 @@ def train():
             mb_ind = train_ind[mbi: mbi+mb]
             mbi += mb
 
+        opt_d.zero_grad()
+        opt_g.zero_grad()
+            
         x = torch.tensor(xs[mb_ind], dtype=torch.float).to(device)
-        t = torch.tensor(xs[mb_ind], dtype=torch.float).to(device)
 
-        opt.zero_grad()
+        #for param in dis.parameters():
+        #    param.requires_grad = True
+        #dis.train()
+        input_noise = np.random.uniform(-1, 1, size=(mb, 100))
+        input_noise = torch.tensor(input_noise, dtype=torch.float).to(device)
+        g_output = gen(input_noise)
+        g_output = torch.reshape(g_output, [mb, channel, img_height, img_width])
 
-        y = model(x)
-        loss = torch.nn.MSELoss()(y, t)
-        loss.backward()
-        opt.step()
-    
-        #pred = y.argmax(dim=1, keepdim=True)
-        acc = y.eq(t.view_as(y)).sum().item() / mb
-        
-        print("iter >>", i+1, ',loss >>', loss.item(), ',accuracy >>', acc)
+        X = torch.cat([x, g_output])
+        X = X.view([mb * 2, -1])
+        t = [1] * mb + [0] * mb
+        t = torch.tensor(t, dtype=torch.float).to(device)
 
-    torch.save(model.state_dict(), 'cnn.pt')
+        dy = dis(X)
+        loss_d = torch.nn.BCELoss()(dy, t)
+
+        loss_d.backward()
+        opt_d.step()
+
+        #for param in dis.parameters():
+        #    param.requires_grad = False
+        #dis.eval()
+        #gen.train()
+        input_noise = np.random.uniform(-1, 1, size=(mb, 100))
+        input_noise = torch.tensor(input_noise, dtype=torch.float).to(device)
+        y = gan(input_noise)
+        t = torch.tensor([1] * mb, dtype=torch.float).to(device)
+        loss_g = torch.nn.BCELoss()(y, t)
+
+        loss_g.backward()
+        opt_g.step()
+
+        if i % 100 == 0:
+            print("iter >>", i+1, ',G:loss >>', loss_g.item(), ',D:loss >>', loss_d.item())
+
+    torch.save(gen.state_dict(), 'cnn.pt')
 
 # test
 def test():
     device = torch.device("cuda" if GPU else "cpu")
-    model = Mynet().to(device)
-    model.eval()
-    model.load_state_dict(torch.load('cnn.pt'))
 
-    xs, paths = data_load('../Dataset/test/images/')
+    gen = Generator().to(device)
+    gen.eval()
+    gen.load_state_dict(torch.load('cnn.pt'))
 
-    for i in range(len(paths)):
-        x = xs[i]
-        path = paths[i]
-        
-        x = np.expand_dims(x, axis=0)
-        x = torch.tensor(x, dtype=torch.float).to(device)
-        
-        pred = model(x)
-
-        pred = pred.view(channel, img_height, img_width)
-        pred = pred.detach().cpu().numpy()
-        pred -= pred.min()
-        pred /= pred.max()
-        pred = pred.transpose(1,2,0)
-
-        print("in {}".format(path))
-        
-        _x = x.detach().cpu().numpy()[0]
-        _x = (_x + 1) / 2
-        if channel == 1:
-            pred = pred[..., 0]
-            _x = _x[0]
-            cmap = 'gray'
-        else:
-            _x = _x.transpose(1,2,0)
-            cmap = None
-
-        plt.subplot(1,2,1)
-        plt.title("input")
-        plt.imshow(_x, cmap=cmap)
-        plt.subplot(1,2,2)
-        plt.title("predicted")
-        plt.imshow(pred, cmap=cmap)
-        plt.show()
+    np.random.seed(100)
     
+    for i in range(3):
+        mb = 10
+        input_noise = np.random.uniform(-1, 1, size=(mb, 100))
+        input_noise = torch.tensor(input_noise, dtype=torch.float).to(device)
+
+        g_output = gen(input_noise)
+
+        if GPU:
+            g_output = g_output.cpu()
+            
+        g_output = g_output.detach().numpy()
+        g_output = (g_output + 1) / 2
+        g_output = g_output.reshape([mb, channel, img_height, img_width])
+        g_output = g_output.transpose(0,2,3,1)
+
+        for i in range(mb):
+            generated = g_output[i]
+            plt.subplot(1,mb,i+1)
+            plt.imshow(generated)
+            plt.axis('off')
+
+        plt.show()
+
 
 def arg_parse():
     parser = argparse.ArgumentParser(description='CNN implemented with Keras')
